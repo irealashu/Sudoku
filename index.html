@@ -16,7 +16,7 @@
             --text-input: #3b82f6;
             --text-error: #ef4444;
             --text-note: #94a3b8;
-            --bg-selected: #bfdbfe;
+            --bg-selected: #93c5fd; /* Stronger blue for selection */
             --bg-highlight: #eff6ff;
             --bg-given: #f1f5f9;
             --bg-success: #bbf7d0; 
@@ -123,11 +123,24 @@
 
         .cell.given { color: var(--text-given); background-color: var(--bg-given); }
         .cell.input { color: var(--text-input); }
-        .cell.error { color: var(--text-error); background-color: #fee2e2; }
         .cell.highlight { background-color: var(--bg-highlight); }
-        .cell.selected { background-color: var(--bg-selected); }
         .cell.same-number { background-color: #dbeafe; }
         .cell.success-highlight { background-color: var(--bg-success) !important; transition: background-color 0.5s ease; }
+
+        /* Error Highlights */
+        .cell.error { color: var(--text-error); background-color: #fee2e2 !important; }
+        
+        /* Strong Selected State */
+        .cell.selected { 
+            background-color: var(--bg-selected) !important; 
+            box-shadow: inset 0 0 0 3px #2563eb; 
+            z-index: 10;
+        }
+        /* Selected State when it's an Error */
+        .cell.selected.error {
+            background-color: #fecaca !important;
+            box-shadow: inset 0 0 0 3px #ef4444;
+        }
 
         /* --- NOTES --- */
         .notes-grid {
@@ -148,7 +161,7 @@
             color: var(--text-note);
         }
 
-        /* --- OVERLAYS --- */
+        /* --- OVERLAYS & TOASTS --- */
         @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
         #pause-screen, #game-over {
             display: none;
@@ -164,6 +177,31 @@
         #game-over { position: fixed; background: rgba(15, 23, 42, 0.9); color: white; z-index: 100;}
         #pause-screen h2 { margin: 0 0 15px 0; color: var(--text-given); font-weight: 800;}
         #end-stats { font-size: 18px; text-align: center; color: #cbd5e1; margin-bottom: 25px; line-height: 1.6;}
+
+        /* Toast Notification */
+        #toast {
+            visibility: hidden;
+            min-width: 250px;
+            background-color: #1e293b;
+            color: #fff;
+            text-align: center;
+            border-radius: 30px;
+            padding: 16px 24px;
+            position: fixed;
+            z-index: 1000;
+            bottom: 30px;
+            font-size: 16px;
+            font-weight: 800;
+            opacity: 0;
+            transition: opacity 0.3s, bottom 0.3s;
+            box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.3);
+            pointer-events: none;
+        }
+        #toast.show {
+            visibility: visible;
+            opacity: 1;
+            bottom: 50px;
+        }
 
         /* --- BUTTONS --- */
         .controls {
@@ -309,6 +347,8 @@
         <button class="btn-primary" id="btn-play-again">Play Again</button>
     </div>
 
+    <div id="toast"></div>
+
 <script>
 (() => {
     // --- STATE VARIABLES ---
@@ -349,6 +389,8 @@
     const btnUndo = document.getElementById('btn-undo');
     const btnRedo = document.getElementById('btn-redo');
     const btnNotes = document.getElementById('btn-notes');
+    const toast = document.getElementById('toast');
+    let toastTimeout;
 
     // --- GENERATOR LOGIC ---
     function isValid(board, row, col, num) {
@@ -615,6 +657,7 @@
                         cell.classList.add('given');
                     } else {
                         cell.classList.add('input');
+                        // Apply error class if it's the currently hinted error cell
                         if (hintedErrorCells.has(`cell-${r}-${c}`)) cell.classList.add('error');
                     }
                 } else {
@@ -659,6 +702,7 @@
                 if (selectedValue !== 0 && currentBoard[r][c] === selectedValue) cell.classList.add('same-number');
             }
         }
+        // Finally apply the strong selected class
         document.getElementById(`cell-${selectedRow}-${selectedCol}`).classList.add('selected');
     }
 
@@ -759,46 +803,66 @@
         }
     }
 
-    function giveHint() {
-        if (isPaused || selectedRow === null || selectedCol === null) return;
-        let actionTaken = false;
+    function showToast(message) {
+        clearTimeout(toastTimeout);
+        toast.textContent = message;
+        toast.className = "show";
+        toastTimeout = setTimeout(() => { toast.className = toast.className.replace("show", ""); }, 4000);
+    }
 
-        if (initialBoard[selectedRow][selectedCol] === 0 && currentBoard[selectedRow][selectedCol] !== solutionBoard[selectedRow][selectedCol]) {
-            saveState(); 
-            let correctNum = solutionBoard[selectedRow][selectedCol];
-            currentBoard[selectedRow][selectedCol] = correctNum;
-            notesBoard[selectedRow][selectedCol] = [];
-            hintedErrorCells.delete(`cell-${selectedRow}-${selectedCol}`); 
-            autoClearNotes(selectedRow, selectedCol, correctNum);
-            actionTaken = true;
+    function giveHint() {
+        if (isPaused) return;
+        
+        let hintFound = false;
+        let hintR = -1;
+        let hintC = -1;
+        let hintVal = -1;
+
+        // 1. Scan entire board to find a WRONG filled cell first
+        for (let r = 0; r < gridSize; r++) {
+            for (let c = 0; c < gridSize; c++) {
+                if (currentBoard[r][c] !== 0 && currentBoard[r][c] !== solutionBoard[r][c]) {
+                    hintR = r; hintC = c; hintVal = solutionBoard[r][c];
+                    hintFound = true; break;
+                }
+            }
+            if (hintFound) break;
         }
 
-        if (!actionTaken) {
-            let startR = selectedRow - (selectedRow % boxRows);
-            let startC = selectedCol - (selectedCol % boxCols);
-            for (let i = 0; i < boxRows; i++) {
-                for (let j = 0; j < boxCols; j++) {
-                    let r = startR + i, c = startC + j;
-                    if (currentBoard[r][c] !== 0 && currentBoard[r][c] !== solutionBoard[r][c]) {
-                        if (!hintedErrorCells.has(`cell-${r}-${c}`)) {
-                            saveState();
-                            hintedErrorCells.add(`cell-${r}-${c}`);
-                            actionTaken = true;
-                            break; 
-                        }
+        // 2. If no wrong cells exist, scan for the first EMPTY cell instead
+        if (!hintFound) {
+            for (let r = 0; r < gridSize; r++) {
+                for (let c = 0; c < gridSize; c++) {
+                    if (currentBoard[r][c] === 0) {
+                        hintR = r; hintC = c; hintVal = solutionBoard[r][c];
+                        hintFound = true; break;
                     }
                 }
-                if (actionTaken) break; 
+                if (hintFound) break;
             }
         }
 
-        if (actionTaken) {
+        if (hintFound) {
+            saveState(); 
+            
+            // Clear previous hints so only one shows at a time
+            hintedErrorCells.clear();
+            hintedErrorCells.add(`cell-${hintR}-${hintC}`);
+            
+            // Auto-select the cell so the user knows exactly where to look
+            selectedRow = hintR;
+            selectedCol = hintC;
+            
             seconds += 10; 
             updateTimerDisplay(); 
-            renderBoard(true); 
-            checkGroups(selectedRow, selectedCol);
-            checkWin();
+            renderBoard(false); 
+            
+            // Show toast message
+            showToast(`Hint: The selected cell should be ${hintVal}`);
+            
             saveLocalState();
+        } else {
+            showToast("No empty or wrong cells found!");
         }
     }
 
@@ -853,7 +917,6 @@
             let m = Math.floor(seconds / 60).toString().padStart(2, '0');
             let s = (seconds % 60).toString().padStart(2, '0');
             
-            // Get dropdown display text
             let diffText = difficultySelect.options[difficultySelect.selectedIndex].text;
             let sizeText = sizeSelect.options[sizeSelect.selectedIndex].text;
 
